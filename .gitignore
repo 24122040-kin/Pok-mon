@@ -1,0 +1,15 @@
+*.pdf
+ptcgProgram 22/
+sample_submission/
+test_load.py
+test_play.py
+test_agent.py
+test_heuristic.py
+check_loss_reasons.py
+debug_game.py
+inspect_cards.py
+inspect_options.py
+print_deck.py
+.DS_Store
+__pycache__/
+*.tar.gz
