@@ -11,6 +11,124 @@ from cg.api import (
     CardType
 )
 
+# Global variables for ONNX inference session
+_ONNX_SESSION = None
+_ONNX_LOADED = False
+
+def init_onnx_model():
+    """Attempt to initialize the ONNX model for deep reinforcement learning inference."""
+    global _ONNX_SESSION, _ONNX_LOADED
+    if _ONNX_LOADED:
+        return
+        
+    onnx_path = "model.onnx"
+    if not os.path.exists(onnx_path):
+        # Check Kaggle submission directory
+        onnx_path = "/kaggle_simulations/agent/" + onnx_path
+        
+    if os.path.exists(onnx_path):
+        try:
+            import onnxruntime as ort
+            # Use CPU execution provider for CPU efficiency and safety on Kaggle
+            _ONNX_SESSION = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+            _ONNX_LOADED = True
+            print("ONNX model loaded successfully!")
+        except Exception as e:
+            print(f"Warning: Failed to load ONNX model ({e}). Falling back to Heuristic Agent.")
+            _ONNX_LOADED = False
+    else:
+        _ONNX_LOADED = False
+
+def extract_state_for_onnx(obs: Observation) -> list:
+    """Extract flat state vector of size 128 matching the DRL Env extraction."""
+    state = [0.0] * 128
+    if not obs or not obs.current:
+        return state
+        
+    your_idx = obs.current.yourIndex
+    player = obs.current.players[your_idx]
+    opponent = obs.current.players[1 - your_idx]
+    
+    # Player 0 (Agent) features
+    idx = 0
+    # Active Pokemon
+    active = player.active[0] if player.active else None
+    state[idx] = active.hp / active.maxHp if active else 0.0; idx += 1
+    state[idx] = len(active.energies) / 5.0 if active else 0.0; idx += 1
+    state[idx] = active.id / 1500.0 if active else 0.0; idx += 1
+    
+    # Bench Pokemon (max 5)
+    for i in range(5):
+        pkmn = player.bench[i] if i < len(player.bench) else None
+        state[idx] = pkmn.hp / pkmn.maxHp if pkmn else 0.0; idx += 1
+        state[idx] = len(pkmn.energies) / 5.0 if pkmn else 0.0; idx += 1
+        state[idx] = pkmn.id / 1500.0 if pkmn else 0.0; idx += 1
+        
+    # Hand & Deck counts
+    state[idx] = len(player.hand or []) / 10.0; idx += 1
+    state[idx] = player.deckCount / 60.0; idx += 1
+    state[idx] = len(player.prize) / 6.0; idx += 1
+    
+    # Player 1 (Opponent) features
+    opp_active = opponent.active[0] if opponent.active else None
+    state[idx] = opp_active.hp / opp_active.maxHp if opp_active else 0.0; idx += 1
+    state[idx] = len(opp_active.energies) / 5.0 if opp_active else 0.0; idx += 1
+    state[idx] = opp_active.id / 1500.0 if opp_active else 0.0; idx += 1
+    
+    for i in range(5):
+        pkmn = opponent.bench[i] if i < len(opponent.bench) else None
+        state[idx] = pkmn.hp / pkmn.maxHp if pkmn else 0.0; idx += 1
+        state[idx] = len(pkmn.energies) / 5.0 if pkmn else 0.0; idx += 1
+        state[idx] = pkmn.id / 1500.0 if pkmn else 0.0; idx += 1
+        
+    state[idx] = opponent.handCount / 10.0; idx += 1
+    state[idx] = opponent.deckCount / 60.0; idx += 1
+    state[idx] = len(opponent.prize) / 6.0; idx += 1
+    
+    # Game Phase / Turn features
+    state[idx] = obs.current.turn / 50.0; idx += 1
+    state[idx] = obs.select.context / 50.0 if obs.select else 0.0; idx += 1
+    
+    # Options features
+    options = obs.select.option if (obs.select and obs.select.option) else []
+    for i in range(50):
+        if i < len(options):
+            opt = options[i]
+            state[idx] = opt.type / 16.0; idx += 1
+            state[idx] = getattr(opt, "attackId", 0) / 1200.0; idx += 1
+        else:
+            idx += 2 # pad with zeros
+            
+    return state
+
+def run_onnx_inference(obs: Observation) -> list[int]:
+    """Execute ONNX model inference and return best action indices."""
+    global _ONNX_SESSION
+    import numpy as np
+    
+    state_vec = extract_state_for_onnx(obs)
+    
+    # Expand dims to batch size 1 (1, 128)
+    input_data = np.expand_dims(np.array(state_vec, dtype=np.float32), axis=0)
+    
+    # Feed to ONNX session
+    input_name = _ONNX_SESSION.get_inputs()[0].name
+    output_name = _ONNX_SESSION.get_outputs()[0].name
+    logits = _ONNX_SESSION.run([output_name], {input_name: input_data})[0][0] # shape (50,)
+    
+    options = obs.select.option
+    max_count = obs.select.maxCount
+    
+    # Mask invalid action indices (indices out of bounds)
+    scored_options = []
+    for i in range(len(options)):
+        score = float(logits[i]) if i < len(logits) else -999999.0
+        scored_options.append((score, i))
+        
+    # Sort descending
+    scored_options.sort(key=lambda x: x[0], reverse=True)
+    return [idx for score, idx in scored_options[:max_count]]
+
 def read_deck_csv() -> list[int]:
     """Read deck.csv.
     
@@ -342,7 +460,17 @@ def agent(obs_dict: dict) -> list[int]:
         # The deck is a list of 60 card IDs.
         # The deck must comply with the Pokémon Trading Card Game rules.
         return read_deck_csv()
+        
+    # Attempt DRL inference if ONNX is available and loaded
+    try:
+        init_onnx_model()
+        if _ONNX_LOADED:
+            return run_onnx_inference(obs)
+    except Exception as e:
+        # Fallback to heuristics silently
+        pass
     
+    # --- HEURISTIC FALLBACK AGENT ---
     context = obs.select.context
     options = obs.select.option
     your_idx = obs.current.yourIndex
