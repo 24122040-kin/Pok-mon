@@ -8,8 +8,21 @@ from cg.api import (
     SelectType,
     SelectContext,
     AreaType,
-    CardType
+    CardType,
+    all_card_data,
+    all_attack
 )
+
+# Global card and attack database maps for Heuristic logic
+try:
+    CARD_DATA_MAP = {c.cardId: c for c in all_card_data()}
+except Exception:
+    CARD_DATA_MAP = {}
+
+try:
+    ATTACK_DMG_MAP = {a.attackId: a.damage for a in all_attack()}
+except Exception:
+    ATTACK_DMG_MAP = {}
 
 # Global variables for ONNX inference session
 _ONNX_SESSION = None
@@ -40,7 +53,7 @@ def init_onnx_model():
         _ONNX_LOADED = False
 
 def extract_state_for_onnx(obs: Observation) -> list:
-    """Extract flat state vector of size 128 matching the DRL Env extraction."""
+    """Extract flat state vector of size 144 matching the DRL Env extraction."""
     state = [0.0] * 144
     if not obs or not obs.current:
         return state
@@ -108,7 +121,7 @@ def run_onnx_inference(obs: Observation) -> list[int]:
     
     state_vec = extract_state_for_onnx(obs)
     
-    # Expand dims to batch size 1 (1, 128)
+    # Expand dims to batch size 1 (1, 144)
     input_data = np.expand_dims(np.array(state_vec, dtype=np.float32), axis=0)
     
     # Feed to ONNX session
@@ -220,6 +233,23 @@ def get_max_attack_damage(obs: Observation, your_idx: int) -> int:
         return 30
     return 10
 
+def calculate_enemy_max_damage_next_turn(obs: Observation, opp_idx: int) -> int:
+    """Safely estimate the maximum attack damage of the opponent active Pokemon next turn."""
+    opponent = obs.current.players[opp_idx]
+    opp_active = opponent.active[0] if opponent.active else None
+    if not opp_active:
+        return 0
+    card_data = CARD_DATA_MAP.get(opp_active.id)
+    if not card_data or not card_data.attacks:
+        return 30 # default baseline damage
+        
+    max_dmg = 0
+    for attack_id in card_data.attacks:
+        dmg = ATTACK_DMG_MAP.get(attack_id, 0)
+        if dmg > max_dmg:
+            max_dmg = dmg
+    return max_dmg if max_dmg > 0 else 30
+
 def score_option(obs: Observation, opt, context, your_idx: int) -> float:
     opt_type = opt.type
     player = obs.current.players[your_idx]
@@ -246,7 +276,7 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
         else:
             score = 100.0
             
-    # 3. SWITCH or TO_ACTIVE or ATTACH_FROM (Selecting a Pokémon in play)
+    # 3. SWITCH or TO_ACTIVE or ATTACH_FROM (Selecting a Pokémon in play / promoting active)
     elif context in (SelectContext.SWITCH, SelectContext.TO_ACTIVE, SelectContext.ATTACH_FROM):
         pkmn = get_pokemon_from_option(obs, opt, your_idx)
         if pkmn:
@@ -274,16 +304,31 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
                     else:
                         score = 1000.0
             else:
-                # Switching / promoting Active Pokémon
-                # Prioritize Abomasnow ex, then Kyogre, then Snover
-                if pkmn.id == 723:
-                    score = 2000.0 + energy_count * 100.0
-                elif pkmn.id == 721:
-                    score = 1500.0 + energy_count * 100.0
-                elif pkmn.id == 722:
-                    score = 1000.0 + energy_count * 100.0
+                # --- CHI THI 4: SACRIFICE PLAY / CHUMPING (BIA DO DAN) ---
+                # Promoting a benched Pokemon. If we cannot KO opponent's active,
+                # prioritize bringing up the weakest 1-prize basic to act as a buffer.
+                opp_active = opponent.active[0] if opponent.active else None
+                opp_hp = opp_active.hp if opp_active else 999
+                max_dmg = get_max_attack_damage(obs, your_idx)
+                can_ko = (max_dmg >= opp_hp)
+                
+                if not can_ko:
+                    is_ex = pkmn.id == 723
+                    if not is_ex:
+                        # Score higher for lower HP basic pokemon to chump block
+                        score = 12000.0 - pkmn.hp
+                    else:
+                        score = 1000.0 # Keep ex safe on the bench
                 else:
-                    score = 500.0 + pkmn.hp
+                    # Normal switch/promotion prioritising strongest attacker
+                    if pkmn.id == 723:
+                        score = 2000.0 + energy_count * 100.0
+                    elif pkmn.id == 721:
+                        score = 1500.0 + energy_count * 100.0
+                    elif pkmn.id == 722:
+                        score = 1000.0 + energy_count * 100.0
+                    else:
+                        score = 500.0 + pkmn.hp
         else:
             score = 100.0
             
@@ -329,65 +374,83 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
         opp_hp = opp_active.hp if opp_active else 999
         can_ko_active = (max_dmg >= opp_hp)
         
+        # --- CHI THI 2: LETHAL RANGE DETECTION ---
+        active_pkmn = player.active[0] if player.active else None
+        enemy_max_dmg = calculate_enemy_max_damage_next_turn(obs, 1 - your_idx)
+        is_in_lethal_range = active_pkmn and active_pkmn.hp <= enemy_max_dmg
+        
         # --- RULE 3: BYPASS & SNIPE (ATTACK DECISION) ---
         if opt_type == OptionType.ATTACK:
             if can_ko_active:
                 score = 15000.0 # Secure KO immediately
             else:
-                # Normal attack preference logic
-                if opt.attackId == 1047: # Frost Barrier (200 damage)
-                    score = 11000.0
-                elif opt.attackId == 1046: # Hammer-lanche
-                    if player.deckCount < 15:
-                        score = 8000.0
+                # If we are in lethal range, prioritize cheap/fast attacks to secure damage before KO
+                if is_in_lethal_range:
+                    if opt.attackId == 1047: # Frost Barrier (200 damage)
+                        score = 14000.0 # High priority
+                    elif opt.attackId == 1043: # Swirling Waves (130 damage)
+                        score = 13500.0
                     else:
-                        score = 10000.0
-                elif opt.attackId == 1043: # Swirling Waves (130 damage)
-                    score = 9500.0
-                elif opt.attackId == 1042: # Riptide
-                    score = 9400.0
+                        score = 12000.0
                 else:
-                    score = 9000.0
+                    # Normal attack preference logic
+                    if opt.attackId == 1047: # Frost Barrier (200 damage)
+                        score = 11000.0
+                    elif opt.attackId == 1046: # Hammer-lanche
+                        if player.deckCount < 15:
+                            score = 8000.0
+                        else:
+                            score = 10000.0
+                    elif opt.attackId == 1043: # Swirling Waves (130 damage)
+                        score = 9500.0
+                    elif opt.attackId == 1042: # Riptide
+                        score = 9400.0
+                    else:
+                        score = 9000.0
                 
         elif opt_type == OptionType.EVOLVE:
             score = 9500.0
             
         elif opt_type == OptionType.ATTACH:
-            # We are attaching a card from hand to a Pokémon in play
-            # Let's find the card being attached
-            card = None
-            if opt.area == AreaType.HAND and player.hand and 0 <= opt.index < len(player.hand):
-                card = player.hand[opt.index]
-                
+            # --- CHI THI 2: DO NOT INVEST IN DYING POKEMON ---
             pkmn = get_pokemon_from_option(obs, opt, your_idx)
-            if card and pkmn:
-                if card.id == 1158: # Maximum Belt
-                    if pkmn.id in (723, 721):
-                        score = 8900.0 if opt.inPlayArea == AreaType.ACTIVE else 8600.0
-                    else:
-                        score = 500.0
-                elif card.id == 3: # Water Energy
-                    energy_count = len(pkmn.energies)
-                    if opt.inPlayArea == AreaType.ACTIVE:
-                        if pkmn.id == 723 and energy_count < 3:
-                            score = 8800.0
-                        elif pkmn.id == 721 and energy_count < 3:
-                            score = 8750.0
-                        elif pkmn.id == 722 and energy_count < 2:
-                            score = 8700.0
-                        else:
-                            score = 7000.0
-                    else: # Bench
-                        if pkmn.id == 722 and energy_count < 2:
-                            score = 8600.0
-                        elif pkmn.id == 721 and energy_count < 3:
-                            score = 8500.0
-                        elif pkmn.id == 723 and energy_count < 3:
-                            score = 8400.0
-                        else:
-                            score = 7000.0
+            if is_in_lethal_range and opt.inPlayArea == AreaType.ACTIVE:
+                # Heavily penalize attaching energies/tools to active if it is going to die
+                score = 3000.0
             else:
-                score = 7000.0
+                # Normal attach logic
+                card = None
+                if opt.area == AreaType.HAND and player.hand and 0 <= opt.index < len(player.hand):
+                    card = player.hand[opt.index]
+                    
+                if card and pkmn:
+                    if card.id == 1158: # Maximum Belt
+                        if pkmn.id in (723, 721):
+                            score = 8900.0 if opt.inPlayArea == AreaType.ACTIVE else 8600.0
+                        else:
+                            score = 500.0
+                    elif card.id == 3: # Water Energy
+                        energy_count = len(pkmn.energies)
+                        if opt.inPlayArea == AreaType.ACTIVE:
+                            if pkmn.id == 723 and energy_count < 3:
+                                score = 8800.0
+                            elif pkmn.id == 721 and energy_count < 3:
+                                score = 8750.0
+                            elif pkmn.id == 722 and energy_count < 2:
+                                score = 8700.0
+                            else:
+                                score = 7000.0
+                        else: # Bench
+                            if pkmn.id == 722 and energy_count < 2:
+                                score = 8600.0
+                            elif pkmn.id == 721 and energy_count < 3:
+                                score = 8500.0
+                            elif pkmn.id == 723 and energy_count < 3:
+                                score = 8400.0
+                            else:
+                                score = 7000.0
+                else:
+                    score = 7000.0
                 
         elif opt_type == OptionType.PLAY:
             card = None
@@ -395,31 +458,39 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
                 card = player.hand[opt.index]
                 
             if card:
-                # --- RULE 1: ANTI-GASSING OUT ---
-                # Prioritize playing drawing Supporter cards when hand is small and no KO is possible
-                if len(player.hand) < 3 and not can_ko_active:
-                    if card.id in (1227, 1235): # Lillie / Waitress
-                        score = 12000.0
-                    elif card.id == 1126: # Precious Trolley
-                        score = 11500.0
-                else:
-                    if card.id == 1126: # Precious Trolley
-                        score = 9000.0
-                    elif card.id == 1152: # Poké Pad
-                        score = 8600.0
-                    elif card.id in (722, 721): # Snover / Kyogre
-                        score = 8500.0
-                    elif card.id in (1145, 1205): # Mega Signal / Cyrano
-                        score = 8000.0
-                    elif card.id == 1235: # Waitress
-                        score = 7800.0
-                    elif card.id == 1227: # Lillie's Determination
-                        if len(player.hand) <= 3:
-                            score = 7900.0
-                        else:
-                            score = 5000.0
+                card_data = CARD_DATA_MAP.get(card.id)
+                # --- CHI THI 1: STADIUM CONTROL ---
+                if card_data and card_data.cardType == CardType.STADIUM:
+                    if len(obs.current.stadium) > 0:
+                        # Opponent has stadium in play: prioritize override!
+                        score = 16000.0
                     else:
-                        score = 7000.0
+                        score = 8000.0
+                else:
+                    # --- RULE 1: ANTI-GASSING OUT ---
+                    if len(player.hand) < 3 and not can_ko_active:
+                        if card.id in (1227, 1235): # Lillie / Waitress
+                            score = 12000.0
+                        elif card.id == 1126: # Precious Trolley
+                            score = 11500.0
+                    else:
+                        if card.id == 1126: # Precious Trolley
+                            score = 9000.0
+                        elif card.id == 1152: # Poké Pad
+                            score = 8600.0
+                        elif card.id in (722, 721): # Snover / Kyogre
+                            score = 8500.0
+                        elif card.id in (1145, 1205): # Mega Signal / Cyrano
+                            score = 8000.0
+                        elif card.id == 1235: # Waitress
+                            score = 7800.0
+                        elif card.id == 1227: # Lillie's Determination
+                            if len(player.hand) <= 3:
+                                score = 7900.0
+                            else:
+                                score = 5000.0
+                        else:
+                            score = 7000.0
             else:
                 score = 7000.0
                 
@@ -431,12 +502,23 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
                 score = 7500.0
             
         elif opt_type == OptionType.RETREAT:
-            # --- RULE 2: PRIZE DENIAL & RETREAT ---
-            # If Active is low HP (<= 50) and we have a bench backup, prioritize retreating!
-            active_pkmn = player.active[0] if player.active else None
-            if active_pkmn and active_pkmn.hp <= 50 and len(player.bench) > 0:
-                is_ex = getattr(active_pkmn, "ex", False) or active_pkmn.id == 723
-                score = 14000.0 if is_ex else 11000.0
+            # --- CHI THI 3: PROACTIVE RETREAT & COST ANALYSIS ---
+            if active_pkmn and is_in_lethal_range and len(player.bench) > 0:
+                is_ex = active_pkmn.id == 723
+                if is_ex:
+                    # Calculate cost vs. value
+                    card_data = CARD_DATA_MAP.get(active_pkmn.id)
+                    retreat_cost = card_data.retreatCost if card_data else 0
+                    total_energies = sum(len(b.energies) for b in player.bench) + len(active_pkmn.energies)
+                    
+                    # If retreat cost consumes more than 50% of our entire energy system, cancel it!
+                    if total_energies > 0 and (retreat_cost / total_energies) > 0.5:
+                        score = 100.0 # Cancel retreat, fight to the end
+                    else:
+                        score = 14500.0 # Retreat to save ex
+                else:
+                    # If it's a 1-prize card, let it die as a sacrifice blocker
+                    score = 100.0
             else:
                 score = 100.0
                 
