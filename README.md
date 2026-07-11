@@ -1,1 +1,1 @@
-# Pok-mon
+# Pokémon AI PTCG
