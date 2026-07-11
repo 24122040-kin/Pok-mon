@@ -90,19 +90,19 @@ class OpponentPolicy:
         import random
         return random.sample(list(range(options_len)), max_count)
 
-def evaluate_agent(env, eval_games=20) -> float:
+def evaluate_agent(eval_env, model, eval_games=20) -> float:
     """Evaluate current RL model against Heuristic baseline."""
     wins = 0
     for _ in range(eval_games):
-        obs, info = env.reset()
+        obs, info = eval_env.reset()
         done = False
         while not done:
-            action_masks = env.action_masks()
-            action, _ = env.unwrapped.model.predict(obs, action_masks=action_masks, deterministic=True)
-            obs, reward, terminated, truncated, info = env.step(action)
+            action_masks = eval_env.action_masks()
+            action, _ = model.predict(obs, action_masks=action_masks, deterministic=True)
+            obs, reward, terminated, truncated, info = eval_env.step(action)
             done = terminated or truncated
             
-        current = env.unwrapped.obs_dict.get("current")
+        current = eval_env.unwrapped.obs_dict.get("current")
         if current and current.get("result") == 0:
             wins += 1
             
@@ -132,7 +132,7 @@ def export_to_onnx(model, onnx_path="model.onnx"):
     onnx_wrapper.eval()
     
     # Create dummy input tensor
-    dummy_input = th.randn(1, 128)
+    dummy_input = th.randn(1, 144)
     
     # Export to ONNX file
     th.onnx.export(
@@ -187,6 +187,9 @@ def main():
     current_step = 0
     opponent_mode = "heuristic"
 
+    # Create a completely separate environment for evaluation to avoid state pollution
+    eval_env = PokemonTCGEnv(opponent_policy=OpponentPolicy(mode="heuristic"))
+
     print(f"Starting Training: Total steps = {total_steps}, Epoch steps = {steps_per_epoch}")
     
     while current_step < total_steps:
@@ -195,10 +198,8 @@ def main():
         current_step += steps_per_epoch
         print(f"Completed step {current_step}/{total_steps}")
         
-        # Evaluate performance against heuristic baseline
-        # Let's temporarily change the opponent of the evaluation env to heuristic
-        env.opponent_policy = OpponentPolicy(mode="heuristic")
-        win_rate = evaluate_agent(env, eval_games=20)
+        # Evaluate performance against heuristic baseline using the dedicated eval_env
+        win_rate = evaluate_agent(eval_env, model, eval_games=20)
         print(f"Evaluation against Heuristic Baseline: Win Rate = {win_rate * 100:.1f}%")
         
         # Check if we should update opponent for Self-play
@@ -212,6 +213,10 @@ def main():
             
         # Re-set training opponent to active self-play or baseline pool
         env.opponent_policy = opp_policy
+        
+        # Force reset the training environment and update model's last observation buffer
+        # to clear any C++ global state pollution caused by the evaluation environment games.
+        model._last_obs = model.env.reset()
         
         # Save checkpoints
         model.save("model_checkpoint.zip")

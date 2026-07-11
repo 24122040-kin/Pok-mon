@@ -41,7 +41,7 @@ def init_onnx_model():
 
 def extract_state_for_onnx(obs: Observation) -> list:
     """Extract flat state vector of size 128 matching the DRL Env extraction."""
-    state = [0.0] * 128
+    state = [0.0] * 144
     if not obs or not obs.current:
         return state
         
@@ -95,7 +95,7 @@ def extract_state_for_onnx(obs: Observation) -> list:
         if i < len(options):
             opt = options[i]
             state[idx] = opt.type / 16.0; idx += 1
-            state[idx] = getattr(opt, "attackId", 0) / 1200.0; idx += 1
+            state[idx] = (getattr(opt, "attackId", 0) or 0) / 1200.0; idx += 1
         else:
             idx += 2 # pad with zeros
             
