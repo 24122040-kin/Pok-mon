@@ -88,6 +88,20 @@ def get_card_id(obs: Observation, opt, your_idx: int) -> int:
                 
     return 0
 
+def get_max_attack_damage(obs: Observation, your_idx: int) -> int:
+    """Calculate maximum damage our active Pokemon can deal."""
+    player = obs.current.players[your_idx]
+    active_pkmn = player.active[0] if player.active else None
+    if not active_pkmn:
+        return 0
+    if active_pkmn.id == 723: # Mega Abomasnow ex
+        return 200 # Frost Barrier consistent damage
+    elif active_pkmn.id == 721: # Kyogre
+        return 130 # Swirling Waves damage
+    elif active_pkmn.id == 722: # Snover
+        return 30
+    return 10
+
 def score_option(obs: Observation, opt, context, your_idx: int) -> float:
     opt_type = opt.type
     player = obs.current.players[your_idx]
@@ -192,32 +206,30 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
             
     # 7. MAIN PHASE SELECTION
     elif context == SelectContext.MAIN:
+        max_dmg = get_max_attack_damage(obs, your_idx)
+        opp_active = opponent.active[0] if opponent.active else None
+        opp_hp = opp_active.hp if opp_active else 999
+        can_ko_active = (max_dmg >= opp_hp)
+        
+        # --- RULE 3: BYPASS & SNIPE (ATTACK DECISION) ---
         if opt_type == OptionType.ATTACK:
-            opp_active = opponent.active[0] if opponent.active else None
-            opp_hp = opp_active.hp if opp_active else 999
-            
-            if opt.attackId == 1047: # Frost Barrier (200 damage)
-                if opp_hp <= 200:
-                    score = 15000.0 # Secure KO
-                else:
+            if can_ko_active:
+                score = 15000.0 # Secure KO immediately
+            else:
+                # Normal attack preference logic
+                if opt.attackId == 1047: # Frost Barrier (200 damage)
                     score = 11000.0
-            elif opt.attackId == 1046: # Hammer-lanche
-                if opp_hp > 200:
-                    if player.deckCount < 15:
-                        score = 9000.0
-                    else:
-                        score = 12000.0
-                else:
+                elif opt.attackId == 1046: # Hammer-lanche
                     if player.deckCount < 15:
                         score = 8000.0
                     else:
                         score = 10000.0
-            elif opt.attackId == 1043: # Swirling Waves (130 damage)
-                score = 9500.0
-            elif opt.attackId == 1042: # Riptide
-                score = 9400.0
-            else:
-                score = 9000.0
+                elif opt.attackId == 1043: # Swirling Waves (130 damage)
+                    score = 9500.0
+                elif opt.attackId == 1042: # Riptide
+                    score = 9400.0
+                else:
+                    score = 9000.0
                 
         elif opt_type == OptionType.EVOLVE:
             score = 9500.0
@@ -265,37 +277,48 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
                 card = player.hand[opt.index]
                 
             if card:
-                if card.id == 1126: # Precious Trolley (Fill bench, high priority)
-                    score = 9000.0
-                elif card.id == 1152: # Poké Pad (Search Snover/Kyogre)
-                    score = 8600.0
-                elif card.id in (722, 721): # Snover / Kyogre
-                    score = 8500.0
-                elif card.id in (1145, 1205): # Mega Signal / Cyrano
-                    score = 8000.0
-                elif card.id == 1235: # Waitress
-                    score = 7800.0
-                elif card.id == 1227: # Lillie's Determination
-                    if len(player.hand) <= 3:
-                        score = 7900.0
-                    else:
-                        score = 5000.0
+                # --- RULE 1: ANTI-GASSING OUT ---
+                # Prioritize playing drawing Supporter cards when hand is small and no KO is possible
+                if len(player.hand) < 3 and not can_ko_active:
+                    if card.id in (1227, 1235): # Lillie / Waitress
+                        score = 12000.0
+                    elif card.id == 1126: # Precious Trolley
+                        score = 11500.0
                 else:
-                    score = 7000.0
+                    if card.id == 1126: # Precious Trolley
+                        score = 9000.0
+                    elif card.id == 1152: # Poké Pad
+                        score = 8600.0
+                    elif card.id in (722, 721): # Snover / Kyogre
+                        score = 8500.0
+                    elif card.id in (1145, 1205): # Mega Signal / Cyrano
+                        score = 8000.0
+                    elif card.id == 1235: # Waitress
+                        score = 7800.0
+                    elif card.id == 1227: # Lillie's Determination
+                        if len(player.hand) <= 3:
+                            score = 7900.0
+                        else:
+                            score = 5000.0
+                    else:
+                        score = 7000.0
             else:
                 score = 7000.0
                 
         elif opt_type == OptionType.ABILITY:
-            score = 7500.0
+            # --- RULE 1: ANTI-GASSING OUT ---
+            if len(player.hand) < 3 and not can_ko_active:
+                score = 11500.0
+            else:
+                score = 7500.0
             
         elif opt_type == OptionType.RETREAT:
+            # --- RULE 2: PRIZE DENIAL & RETREAT ---
+            # If Active is low HP (<= 50) and we have a bench backup, prioritize retreating!
             active_pkmn = player.active[0] if player.active else None
-            if active_pkmn and active_pkmn.hp <= 40:
-                has_healthy_bench = any(b.hp > 100 for b in player.bench)
-                if has_healthy_bench:
-                    score = 7600.0
-                else:
-                    score = 100.0
+            if active_pkmn and active_pkmn.hp <= 50 and len(player.bench) > 0:
+                is_ex = getattr(active_pkmn, "ex", False) or active_pkmn.id == 723
+                score = 14000.0 if is_ex else 11000.0
             else:
                 score = 100.0
                 
