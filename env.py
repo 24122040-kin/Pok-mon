@@ -1,3 +1,4 @@
+import os
 import gymnasium as gym
 import numpy as np
 import random
@@ -6,7 +7,7 @@ from cg.api import to_observation_class, Observation, AreaType, OptionType, Sele
 from main import score_option, read_deck_csv
 
 MAX_OPTIONS = 50
-STATE_DIM = 128
+STATE_DIM = 144
 
 class PokemonTCGEnv(gym.Env):
     """Custom Gymnasium environment for Pokemon TCG wrapping the cabt engine."""
@@ -94,7 +95,7 @@ class PokemonTCGEnv(gym.Env):
             if i < len(options):
                 opt = options[i]
                 state[idx] = opt.type / 16.0; idx += 1
-                state[idx] = getattr(opt, "attackId", 0) / 1200.0; idx += 1
+                state[idx] = (getattr(opt, "attackId", 0) or 0) / 1200.0; idx += 1
             else:
                 idx += 2 # pad with zeros
                 
@@ -120,7 +121,25 @@ class PokemonTCGEnv(gym.Env):
         except Exception:
             pass
             
-        self.obs_dict, start_data = battle_start(self.deck, self.deck)
+        # Select opponent deck: 60% own deck, 40% random opponent deck from opponent_decks/
+        opponent_deck = self.deck
+        if random.random() < 0.4:
+            opp_decks_dir = "opponent_decks"
+            if not os.path.exists(opp_decks_dir):
+                opp_decks_dir = "/kaggle_simulations/agent/" + opp_decks_dir
+                
+            if os.path.exists(opp_decks_dir):
+                csv_files = [f for f in os.listdir(opp_decks_dir) if f.endswith(".csv")]
+                if csv_files:
+                    chosen_csv = random.choice(csv_files)
+                    chosen_path = os.path.join(opp_decks_dir, chosen_csv)
+                    try:
+                        with open(chosen_path, "r") as file:
+                            opp_deck = [int(line.strip()) for line in file.read().split("\n") if line.strip()][:60]
+                    except Exception:
+                        opp_deck = self.deck
+                        
+        self.obs_dict, start_data = battle_start(self.deck, opponent_deck)
         self.last_prize_count = 6
         self.step_count = 0
         
