@@ -13,10 +13,10 @@ class PokemonTCGEnv(gym.Env):
     """Custom Gymnasium environment for Pokemon TCG wrapping the cabt engine."""
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, opponent_policy=None):
+    def __init__(self, opponent_policy=None, player_deck=None):
         super().__init__()
         self.opponent_policy = opponent_policy if opponent_policy is not None else self._random_policy
-        self.deck = read_deck_csv()
+        self.deck = player_deck if player_deck is not None else read_deck_csv()
         
         # Action space: select one of the MAX_OPTIONS options
         self.action_space = gym.spaces.Discrete(MAX_OPTIONS)
@@ -121,9 +121,11 @@ class PokemonTCGEnv(gym.Env):
         except Exception:
             pass
             
-        # Select opponent deck: 60% own deck, 40% random opponent deck from opponent_decks/
+        # Select opponent deck
         opponent_deck = self.deck
-        if random.random() < 0.4:
+        if hasattr(self, 'opponent_deck_override') and self.opponent_deck_override is not None:
+            opponent_deck = self.opponent_deck_override
+        elif random.random() < 0.4:
             opp_decks_dir = "opponent_decks"
             if not os.path.exists(opp_decks_dir):
                 opp_decks_dir = "/kaggle_simulations/agent/" + opp_decks_dir
@@ -135,9 +137,9 @@ class PokemonTCGEnv(gym.Env):
                     chosen_path = os.path.join(opp_decks_dir, chosen_csv)
                     try:
                         with open(chosen_path, "r") as file:
-                            opp_deck = [int(line.strip()) for line in file.read().split("\n") if line.strip()][:60]
+                            opponent_deck = [int(line.strip()) for line in file.read().split("\n") if line.strip()][:60]
                     except Exception:
-                        opp_deck = self.deck
+                        pass
                         
         self.obs_dict, start_data = battle_start(self.deck, opponent_deck)
         self.last_prize_count = 6

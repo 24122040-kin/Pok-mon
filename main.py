@@ -283,26 +283,15 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
             energy_count = len(pkmn.energies)
             
             if context == SelectContext.ATTACH_FROM:
-                # Selecting which Pokémon to attach energy to
-                # Prioritize active if it needs energy
-                if opt.area == AreaType.ACTIVE:
-                    if pkmn.id == 723 and energy_count < 3: # Mega Abomasnow ex
-                        score = 3000.0
-                    elif pkmn.id == 721 and energy_count < 3: # Kyogre
-                        score = 2900.0
-                    elif pkmn.id == 722 and energy_count < 2: # Snover
-                        score = 2800.0
-                    else:
-                        score = 1000.0
-                else: # Bench
-                    if pkmn.id == 722 and energy_count < 2:
-                        score = 2500.0
-                    elif pkmn.id == 721 and energy_count < 3:
-                        score = 2400.0
-                    elif pkmn.id == 723 and energy_count < 3:
-                        score = 2300.0
-                    else:
-                        score = 1000.0
+                # Prioritize Mega Abomasnow ex (our main attacker)
+                if pkmn.id == 723 and energy_count < 3:
+                    score = 3200.0 if opt.area == AreaType.ACTIVE else 3000.0
+                elif pkmn.id == 721 and energy_count < 3:
+                    score = 2900.0 if opt.area == AreaType.ACTIVE else 2400.0
+                elif pkmn.id == 722 and energy_count < 2:
+                    score = 2800.0 if opt.area == AreaType.ACTIVE else 2200.0
+                else:
+                    score = 1000.0
             else:
                 # --- CHI THI 4: SACRIFICE PLAY / CHUMPING (BIA DO DAN) ---
                 # Promoting a benched Pokemon. If we cannot KO opponent's active,
@@ -441,12 +430,12 @@ def score_option(obs: Observation, opt, context, your_idx: int) -> float:
                             else:
                                 score = 7000.0
                         else: # Bench
-                            if pkmn.id == 722 and energy_count < 2:
+                            if pkmn.id == 723 and energy_count < 3:
+                                score = 8650.0
+                            elif pkmn.id == 722 and energy_count < 2:
                                 score = 8600.0
                             elif pkmn.id == 721 and energy_count < 3:
-                                score = 8500.0
-                            elif pkmn.id == 723 and energy_count < 3:
-                                score = 8400.0
+                                score = 8450.0
                             else:
                                 score = 7000.0
                 else:

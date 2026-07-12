@@ -13,3 +13,6 @@ print_deck.py
 .DS_Store
 __pycache__/
 *.tar.gz
+*.zip
+league_archive/
+*.log
