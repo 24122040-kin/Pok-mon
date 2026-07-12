@@ -131,16 +131,36 @@ def run_onnx_inference(obs: Observation) -> list[int]:
     
     options = obs.select.option
     max_count = obs.select.maxCount
+    your_idx = obs.current.yourIndex
     
-    # Mask invalid action indices (indices out of bounds)
-    scored_options = []
+    # 1. Primary choice is chosen purely by the ONNX RL Model
+    best_logit = -999999.0
+    primary_choice = 0
     for i in range(len(options)):
-        score = float(logits[i]) if i < len(logits) else -999999.0
-        scored_options.append((score, i))
-        
-    # Sort descending
-    scored_options.sort(key=lambda x: x[0], reverse=True)
-    return [idx for score, idx in scored_options[:max_count]]
+        val = float(logits[i]) if i < len(logits) else -999999.0
+        if val > best_logit:
+            best_logit = val
+            primary_choice = i
+            
+    choices = [primary_choice]
+    
+    # 2. Secondary choices are chosen by Heuristic (matching training env logic)
+    if max_count > 1 and len(options) > 1:
+        scored_options = []
+        for i in range(len(options)):
+            if i == primary_choice:
+                continue
+            try:
+                score = score_option(obs, options[i], obs.select.context, your_idx)
+            except Exception:
+                score = 100.0
+            scored_options.append((score, i))
+            
+        scored_options.sort(key=lambda x: x[0], reverse=True)
+        for _, idx in scored_options[:max_count - 1]:
+            choices.append(idx)
+            
+    return choices
 
 def read_deck_csv() -> list[int]:
     """Read deck.csv.
