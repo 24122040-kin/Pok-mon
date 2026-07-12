@@ -243,7 +243,7 @@ class PokemonTCGEnv(gym.Env):
                     self.last_prize_count = prize_count
                     
         # Small step penalty to avoid stalling
-        reward -= 0.05
+        reward -= 0.005
         
         if self.step_count >= 500:
             truncated = True

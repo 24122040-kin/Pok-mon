@@ -141,12 +141,17 @@ def main():
             if not ghost_zip: # Fallback if ring buffer is empty
                 ghost_zip, ghost_csv = get_random_ghost("historical")
         else:
-            # 20% Historical/Foundation
-            if random.random() < 0.2: # 4% chance overall for pure heuristic
+            # 20% Historical/Foundation/Boss
+            rand_val = random.random()
+            if rand_val < 0.2: # 4% pure heuristic
                 opp_policy.mode = "heuristic"
                 ghost_zip = "Heuristic Bot"
                 ghost_csv = None
-            else:
+            elif rand_val < 0.6: # 8% Tank Boss (to cure Litten Rush)
+                opp_policy.mode = "heuristic"
+                ghost_zip = "Tank Boss"
+                ghost_csv = "opponent_decks/deck_tank_boss.csv"
+            else: # 8% Historical Ghosts
                 ghost_zip, ghost_csv = get_random_ghost("historical")
                 
         if ghost_zip and opp_policy.mode == "rl":
