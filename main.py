@@ -289,6 +289,7 @@ def score_option(obs, opt, context, your_idx: int) -> float:
             
     elif context == SelectContext.SETUP_BENCH_POKEMON:
         if card_id == 46: score = 1000.0
+        elif card_id in (31, 77, 97, 76): score = 800.0
         else: score = 100.0
             
     elif context in (SelectContext.SWITCH, SelectContext.TO_ACTIVE, SelectContext.ATTACH_FROM):
@@ -308,11 +309,17 @@ def score_option(obs, opt, context, your_idx: int) -> float:
                 can_ko = (max_dmg >= opp_hp)
                 
                 if not can_ko:
-                    if pkmn.id != 46: score = 12000.0 - pkmn.hp
-                    else: score = 1000.0 
+                    if pkmn.id == 46 and energy_count >= 3:
+                        score = 13000.0 # Strongly promote powered up main attacker!
+                    elif pkmn.id == 31 and energy_count >= 2:
+                        score = 11000.0
+                    elif pkmn.id != 46: 
+                        score = 500.0 + pkmn.hp # normal priority
+                    else:
+                        score = 100.0
                 else:
-                    if pkmn.id == 46: score = 2000.0 + energy_count * 100.0
-                    elif pkmn.id == 31: score = 1500.0 + energy_count * 100.0
+                    if pkmn.id == 46: score = 20000.0 + energy_count * 100.0
+                    elif pkmn.id == 31: score = 15000.0 + energy_count * 100.0
                     else: score = 500.0 + pkmn.hp
         else: score = 100.0
             
@@ -373,13 +380,11 @@ def score_option(obs, opt, context, your_idx: int) -> float:
             if card in (1235, 1205): score = 9400.0
             elif card == 1227: score = 9300.0
             elif card == 1145: 
-                if can_ko_active: score = 100.0 
-                else: score = 9200.0
+                score = 100.0
             else: score = 8000.0
                 
         elif opt_type == OptionType.RETREAT:
-            if is_in_lethal_range: score = 9100.0
-            else: score = 1000.0
+            score = 100.0
                 
     return score
 
@@ -403,6 +408,28 @@ def agent(obs_dict: dict) -> list[int]:
     try:
         init_onnx_model()
         if _ONNX_LOADED:
+            # --- PHASE 1: HYBRID HEURISTIC OVERRIDE ---
+            options = obs.select.option
+            max_count = obs.select.maxCount
+            your_idx = obs.current.yourIndex
+            
+            best_score = -999999.0
+            best_idx = 0
+            
+            if max_count == 1 and len(options) > 1:
+                for i, opt in enumerate(options):
+                    try:
+                        score = score_option(obs, opt, obs.select.context, your_idx)
+                    except Exception:
+                        score = 100.0
+                    if score > best_score:
+                        best_score = score
+                        best_idx = i
+                if best_score >= 8500.0:
+                    # GOD MOVE DETECTED! OVERRIDE RL!
+                    return [best_idx]
+            
+            # --- PHASE 2: ONNX INFERENCE ---
             return run_onnx_inference(obs)
     except Exception as e:
         # Fallback to heuristics silently
