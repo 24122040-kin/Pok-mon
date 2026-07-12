@@ -58,10 +58,10 @@ def init_league():
 def init_model(env):
     policy_kwargs = dict(
         features_extractor_class=PokemonFeatureExtractor,
-        features_extractor_kwargs=dict(features_dim=128),
-        net_arch=dict(pi=[128, 128], vf=[128, 128])
+        features_extractor_kwargs=dict(features_dim=256),
+        net_arch=dict(pi=[256, 256, 256], vf=[256, 256, 256])
     )
-    return MaskablePPO("MlpPolicy", env, policy_kwargs=policy_kwargs, learning_rate=3e-4, n_steps=1024, batch_size=64, verbose=0)
+    return MaskablePPO("MlpPolicy", env, policy_kwargs=policy_kwargs, learning_rate=2e-4, n_steps=2048, batch_size=128, verbose=0)
 
 def get_random_ghost(category):
     if category == "recent":
@@ -121,8 +121,8 @@ def main():
         print("WARNING: model_Champion.zip not found! Starting fresh.")
         model = init_model(env)
         
-    EPOCHS = 40
-    STEPS_PER_EPOCH = 100000
+    EPOCHS = 50
+    STEPS_PER_EPOCH = 250000
     
     print(f"Starting League Training for {EPOCHS} Epochs ({EPOCHS * STEPS_PER_EPOCH} steps)...")
     

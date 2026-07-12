@@ -9,11 +9,11 @@ class PokemonFeatureExtractor(BaseFeaturesExtractor):
         
         # Simple multi-layer perceptron to encode the 1D state representation vector
         self.encoder = nn.Sequential(
-            nn.Linear(observation_space.shape[0], 256),
+            nn.Linear(observation_space.shape[0], 512),
             nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Linear(128, features_dim),
+            nn.Linear(256, features_dim),
             nn.ReLU()
         )
 
